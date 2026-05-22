@@ -8,7 +8,7 @@ from src.tools.chat import chat_clear, chat_reload, chat_status, send_to_chat
 class ChatToolTests(unittest.TestCase):
     def test_send_to_chat_normalizes_payload_and_meta(self) -> None:
         response = {
-            "result": '{"reply":"Done","toolCalls":[{"name":"get_scene_info","arguments":{},"result":"{}"}],"model":"anthropic/test"}',
+            "result": '{"reply":"Done","toolCalls":[{"name":"get_scene_info","arguments":{},"result":"{}"}],"model":"claude-sonnet-4-6"}',
             "requestId": "chat-123",
             "meta": {"threadMode": "direct"},
         }
@@ -26,7 +26,7 @@ class ChatToolTests(unittest.TestCase):
             cmd_type="native:chat_ui",
         )
         self.assertEqual(result["reply"], "Done")
-        self.assertEqual(result["model"], "anthropic/test")
+        self.assertEqual(result["model"], "claude-sonnet-4-6")
         self.assertEqual(result["requestId"], "chat-123")
         self.assertEqual(result["meta"]["threadMode"], "direct")
 
@@ -70,7 +70,7 @@ class ChatToolTests(unittest.TestCase):
 
     def test_chat_reload_normalizes_response(self) -> None:
         response = {
-            "result": '{"configured":true,"model":"openai/gpt-5.4-mini","baseUrl":"https://openrouter.ai/api/v1"}',
+            "result": '{"configured":true,"model":"claude-sonnet-4-6","baseUrl":"https://api.anthropic.com"}',
             "requestId": "reload-1",
             "meta": {"threadMode": "mainThread"},
         }
@@ -83,7 +83,7 @@ class ChatToolTests(unittest.TestCase):
             cmd_type="native:chat_ui",
         )
         self.assertEqual(result["configured"], True)
-        self.assertEqual(result["model"], "openai/gpt-5.4-mini")
+        self.assertEqual(result["model"], "claude-sonnet-4-6")
         self.assertEqual(result["requestId"], "reload-1")
 
 

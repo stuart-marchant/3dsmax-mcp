@@ -114,7 +114,7 @@ def deploy_config(skip_skill: bool = False) -> bool:
         print(f"  .env:           preserved (already exists)")
     elif ENV_SRC.exists():
         shutil.copy2(ENV_SRC, ENV_DST)
-        print(f"  .env:           installed template (edit to add OPENROUTER_API_KEY)")
+        print(f"  .env:           installed template (only used if MCP_ENABLE_CHAT=1; add ANTHROPIC_API_KEY)")
     else:
         print(f"  .env:           SKIP (no .env.example in repo)")
 

@@ -79,7 +79,17 @@ python scripts/build_skill.py
 
 ## Safe mode
 
-Both the native bridge and the MAXScript listener read from a shared config:
+Three layers of substring blocklist, kept in lockstep:
+
+- **Python (`src/helpers/safe_mode.py`)** — applied to
+  `execute_maxscript` before the script reaches the bridge. Disable
+  per-process with `MCP_SAFE_MODE=false`.
+- **Native bridge (`native/src/command_dispatcher.cpp`)** — applied
+  to every MAXScript dispatch the named pipe receives.
+- **MAXScript TCP fallback (`maxscript/mcp_server.ms`)** — same
+  list, re-applied at the legacy 2024/2025 entry point.
+
+Both bridge layers read from a shared config:
 
 ```
 %LOCALAPPDATA%\3dsmax-mcp\mcp_config.ini
@@ -90,20 +100,49 @@ Both the native bridge and the MAXScript listener read from a shared config:
 safe_mode = true
 ```
 
-When enabled (default), these commands are blocked:
-`DOSCommand`, `ShellLaunch`, `deleteFile`, `python.Execute`, `createFile`
-
-To disable, set `safe_mode = false` and restart 3ds Max.
+When enabled (default), scripts containing any of these case-insensitive
+fragments are rejected: `DOSCommand`, `HiddenDOSCommand`, `ShellLaunch`,
+`deleteFile`, `createFile`, `python.Execute`, `dotNetClass`,
+`dotNetObject`, `dotNetMethod`, `loadAssembly`, `fileIn`,
+`registerOLEInterface`, `decodeBase64`, `encodeBase64`,
+and `execute(` / `execute (`.
 
 ### Scope — read this
 
-`safe_mode` is an **accident preventer**, not a sandbox. It's a case-insensitive substring blocklist, so a determined author (or a sufficiently clever LLM) can bypass it with string concatenation, DotNet reflection, etc. It catches the obvious shapes — LLM hallucinates `deleteFile` → rejected — not an adversarial MaxScript author.
+`safe_mode` is an **accident preventer**, not a sandbox. It is a
+case-insensitive substring blocklist, so a determined author (or a
+sufficiently clever LLM) can bypass it with string concatenation,
+runtime symbol lookup, etc. It catches the obvious shapes — LLM
+hallucinates `deleteFile` → rejected — not an adversarial MaxScript
+author.
 
 What it **doesn't** cover:
-- Native C++ handlers run unfiltered: `delete_objects`, `manage_scene` (reset/new/open), `render_scene`, `merge_from_file`, `write_osl_shader`, `capture_*` (disk writes). If the LLM hallucinates them they run.
-- The `\\.\pipe\3dsmax-mcp` named pipe uses the default ACL — any process running as your user can open it and send commands. Fine on a single-user dev machine; if you need multi-user isolation, gate on `GetNamedPipeClientProcessId`.
 
-The v0.7.0 chat window runs your configured LLM with direct scene-editing tools. Treat it like you'd treat any local agent that can edit your scene: don't point it at scenes you wouldn't double-click, and keep your API key in `.env` not a shared drive.
+- Native C++ handlers run unfiltered: `delete_objects`,
+  `manage_scene` (reset/new/open), `render_scene`,
+  `merge_from_file`, `write_osl_shader`, `capture_*` (disk writes).
+  Filesystem-touching tools have separate guards via the path policy
+  below.
+- The `\\.\pipe\3dsmax-mcp` named pipe uses the default ACL — any
+  process running as your user can open it and send commands. Fine
+  on a single-user artist machine; if you need multi-user isolation,
+  gate on `GetNamedPipeClientProcessId`.
+
+## Path policy
+
+Tools that take filesystem paths (`render_scene`, `merge_from_file`,
+`inspect_max_file`, `batch_file_info`, `search_max_files`) are gated
+by `src/helpers/paths.py` so an LLM-generated path cannot reach into
+the user's profile or system folders.
+
+| Env var | Effect |
+|---|---|
+| `MCP_PROJECT_ROOTS` | Semicolon-/colon-separated absolute roots that paths must live under. When set, this is the only allow-list. |
+| `MCP_ALLOW_ANY_PATH=true` | Disable the allow-list (still blocks SSH/AWS/credential paths). |
+| _(neither set)_ | Default allow-list: `~/Documents`, `~/Desktop`, `~/Downloads`, `~/3dsMax`, `~/Max`, system temp. |
+
+Paths under SSH/AWS/GnuPG/credential folders, `System32`, etc. are
+**always** blocked, even with `MCP_ALLOW_ANY_PATH`.
 
 ## Tools
 
@@ -128,28 +167,54 @@ Default full profile: 116 tools across scene management, objects, materials, mod
 | Data Channel | `add_data_channel`, `inspect_data_channel`, `set_data_channel_operator` | MAXScript |
 | Scripting | `execute_maxscript` | Pipe |
 
-## v0.7.0 — Standalone Chat Mode
+## Optional: in-Max chat (off by default)
 
-Run an AI chat entirely inside 3ds Max — no external MCP client required. The native bridge ships with a Win32 chat window, an OpenAI-compatible LLM client, and direct access to scene tools.
+The bridge can host an LLM chat window inside 3ds Max with direct
+scene-editing tools. This routes scene contents through Anthropic's
+Messages API and is **disabled by default**. Enable on machines you
+have explicitly cleared for third-party LLM egress:
 
-- **Launch:** You can find chat window in usermacros or search it directly by global search.
-- **API key:** `%LOCALAPPDATA%\3dsmax-mcp\.env` — `OPENROUTER_API_KEY=...` (also accepts `LLM_API_KEY` / `OPENAI_API_KEY`). Real env vars override the file. `deploy.bat` seeds `.env.example` on first install.
-- **Settings:** `%LOCALAPPDATA%\3dsmax-mcp\mcp_config.ini` `[llm]` — non-secret knobs only (`base_url`, `model`, `max_tokens`, `temperature`, plus token controls below). Default target is OpenRouter + `anthropic/claude-sonnet-4.6`.
-- **Token controls:** external MCP defaults to `MCP_TOOL_PROFILE=full` plus concise tool descriptions. Standalone chat defaults to `prompt_mode=compact`, `tool_profile=full`, `include_scene_snapshot=true`, `max_scene_roots=25`, `max_prompt_chars=12000`, `max_tool_result_chars=12000`, `max_history_tool_chars=1800`, `max_tool_summary_chars=600`, `max_display_tool_chars=600`, `max_tool_loops=4`. Use `MCP_TOOL_PROFILE=core` or `tool_profile=core` only when you need a smaller tool surface.
-- **Tools:** native tools from `src/tools/*.py` are auto-registered (generated at build time by `scripts/gen_tool_registry.py`), plus `execute_maxscript` as a catch-all. The default chat schema exposes the full profile; the compact registry remains available with `tool_profile=core`.
-- **Security:** the existing `[mcp] safe_mode` filter applies — `execute_maxscript` calls from the chat hit the same keyword blocklist as every other path.
-- **Skill-aware:** the v0.7.0 deploy copies `SKILL.md` to `%LOCALAPPDATA%\3dsmax-mcp\skill\`. The chat uses a compact rule summary by default; set `prompt_mode=full` to inject the deployed `SKILL.md`.
+1. Set `MCP_ENABLE_CHAT=1` in the environment the MCP server runs in.
+   - The Python MCP server reads it at tool registration to decide
+     whether to expose `send_to_chat` / `chat_status` / `chat_reload`
+     / `chat_clear`.
+   - The C++ GUP plugin reads it at Max startup to decide whether to
+     initialise the chat UI, the LLM client, and the `MCP Chat`
+     toolbar macroscript.
+2. Put `ANTHROPIC_API_KEY=sk-ant-...` in
+   `%LOCALAPPDATA%\3dsmax-mcp\.env` (or as a real env var).
+3. Restart 3ds Max.
+
+Default model is `claude-sonnet-4-6` for cost control. Override in
+`mcp_config.ini` `[llm] model`. There is **no** OpenAI / OpenRouter
+fallback in this fork — the client talks to
+`https://api.anthropic.com/v1/messages` directly.
+
+When `MCP_ENABLE_CHAT` is unset (the default), the chat surface is
+fully cold: no Python tools, no C++ chat window, no toolbar button,
+no LLM HTTP traffic.
+
+- **Token controls (when enabled):** standalone chat defaults to
+  `prompt_mode=compact`, `tool_profile=full`,
+  `include_scene_snapshot=true`, `max_scene_roots=25`,
+  `max_prompt_chars=12000`, `max_tool_result_chars=12000`,
+  `max_history_tool_chars=1800`, `max_tool_summary_chars=600`,
+  `max_display_tool_chars=600`, `max_tool_loops=4`. Use
+  `tool_profile=core` for a smaller per-turn tool surface.
 - **Slash commands:** `/reload`, `/clear`, `/help`.
 
 ## Building from source (native bridge)
 
-Only needed if you want to modify the C++ plugin.
+**This fork ships no prebuilt `.gup` binaries** — they were removed
+because the upstream binaries embed the OpenAI-compat / OpenRouter
+chat client. Rebuild from source before deploying.
 
+**Max 2026** — Visual Studio 2022 (v143), C++17, CMake 3.20+
 **Max 2027+** — Visual Studio 2022 (v143), C++20, CMake 3.20+
 
 ```powershell
 cd native
-cmake -B build -G "Visual Studio 17 2022" -A x64 -DMAX_VERSION=2027
+cmake -B build -G "Visual Studio 17 2022" -A x64 -DMAX_VERSION=2026
 cmake --build build --config Release
 ```
 

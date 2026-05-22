@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Optional
 from ..server import mcp, client
 from ..coerce import StrList
+from ..helpers.paths import validate_path, validate_paths, PathPolicyError
 
 
 @mcp.tool()
@@ -16,6 +17,10 @@ def inspect_max_file(
     list_classes: bool = False,
 ) -> str:
     """Inspect an external .max file without opening it."""
+    try:
+        file_path = validate_path(file_path, purpose="read .max file")
+    except PathPolicyError as exc:
+        return json.dumps({"error": str(exc)})
     payload = json.dumps({
         "file_path": file_path,
         "list_objects": list_objects,
@@ -33,6 +38,10 @@ def merge_from_file(
     duplicate_action: str = "rename",
 ) -> str:
     """Merge objects from an external .max file into the current scene."""
+    try:
+        file_path = validate_path(file_path, purpose="merge from .max file")
+    except PathPolicyError as exc:
+        return json.dumps({"error": str(exc)})
     payload = {
         "file_path": file_path,
         "select_merged": select_merged,
@@ -50,6 +59,10 @@ def batch_file_info(
     list_objects: bool = False,
 ) -> str:
     """Read metadata from multiple .max files in a single call."""
+    try:
+        file_paths = validate_paths(file_paths, purpose="read .max file")
+    except PathPolicyError as exc:
+        return json.dumps({"error": str(exc)})
     payload = json.dumps({
         "file_paths": file_paths,
         "list_objects": list_objects,
@@ -95,6 +108,10 @@ def search_max_files(
     max_files: int = 0,
 ) -> str:
     """Search .max files in a folder for objects matching a name pattern."""
+    try:
+        folder = validate_path(folder, purpose="scan folder")
+    except PathPolicyError as exc:
+        return json.dumps({"error": str(exc)})
     p = Path(folder)
     if not p.is_dir():
         return json.dumps({"error": f"Folder not found: {folder}"})

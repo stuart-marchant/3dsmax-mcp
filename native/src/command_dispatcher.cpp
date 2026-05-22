@@ -158,13 +158,28 @@ static bool ContainsBlockedCommand(const std::string& cmd) {
     std::string lower = cmd;
     for (auto& c : lower) c = (char)tolower((unsigned char)c);
 
+    // Keep in lockstep with src/helpers/safe_mode.py and
+    // maxscript/mcp_server.ms. See README → "Safe mode".
     static const char* blocked[] = {
         "doscommand",
+        "hiddendoscommand",
         "shelllaunch",
         "deletefile",
-        "python.execute",
         "createfile",
-        "hiddendoscommand",
+        "python.execute",
+        "dotnetclass",
+        "dotnetobject",
+        "dotnetmethod",
+        "loadassembly",
+        "filein ",
+        "filein\t",
+        "filein\"",
+        "filein(",
+        "registerolei",
+        "decodebase64",
+        "encodebase64",
+        "execute (",
+        "execute(",
     };
     for (const char* b : blocked) {
         if (lower.find(b) != std::string::npos) return true;

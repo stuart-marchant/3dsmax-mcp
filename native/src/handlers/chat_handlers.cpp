@@ -178,15 +178,16 @@ static ChatTurnResult RunChatTurn(const std::string& text, MCPBridgeGUP* gup, in
             throw std::runtime_error(response.error);
         }
 
+        // Anthropic stores tool calls as `tool_use` content blocks on the
+        // assistant message, not as a sibling `tool_calls` array. We re-pack
+        // here so llm_client.cpp can pass them back verbatim on the next turn.
         json toolCallsJson = json::array();
         for (auto& tc : response.toolCalls) {
             toolCallsJson.push_back({
+                {"type", "tool_use"},
                 {"id", tc.id},
-                {"type", "function"},
-                {"function", {
-                    {"name", tc.name},
-                    {"arguments", tc.arguments.dump()}
-                }}
+                {"name", tc.name},
+                {"input", tc.arguments},
             });
         }
 
@@ -397,7 +398,7 @@ std::string NativeHandlers::ChatUI(const std::string& params, MCPBridgeGUP* gup)
             } else {
                 MCPChatUI::AppendMessage("system",
                     "No API key found. Edit %LOCALAPPDATA%\\3dsmax-mcp\\.env:\n\n"
-                    "    OPENROUTER_API_KEY=sk-or-...\n\n"
+                    "    ANTHROPIC_API_KEY=sk-ant-...\n\n"
                     "Then type /reload (or Ctrl+R). Model + base_url are in mcp_config.ini.");
             }
 

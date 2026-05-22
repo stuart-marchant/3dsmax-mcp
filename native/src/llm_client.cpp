@@ -205,8 +205,8 @@ void LLMClient::Init() {
     std::string ini = ConfigIniPath();
 
     g_config.apiKey     = ReadIni(ini, "llm", "api_key",     "");
-    g_config.baseUrl    = ReadIni(ini, "llm", "base_url",    "https://openrouter.ai/api/v1");
-    g_config.model      = ReadIni(ini, "llm", "model",       "anthropic/claude-sonnet-4.6");
+    g_config.baseUrl    = ReadIni(ini, "llm", "base_url",    "https://api.anthropic.com");
+    g_config.model      = ReadIni(ini, "llm", "model",       "claude-sonnet-4-6");
     g_apiKeySource      = "none";
 
     // GetPrivateProfileStringA returns "" (not the default) when the key exists
@@ -266,35 +266,22 @@ void LLMClient::Init() {
             if (log) {
                 std::wstring msg = L"MCP Bridge: rejecting base_url '" + Utf8ToWide(g_config.baseUrl) +
                     L"' — must be https:// (or http://localhost for local LLMs). "
-                    L"Falling back to https://openrouter.ai/api/v1.";
+                    L"Falling back to https://api.anthropic.com.";
                 log->LogEntry(SYSLOG_WARN, NO_DIALOG, _T("MCP Bridge"), msg.c_str());
             }
-            g_config.baseUrl = "https://openrouter.ai/api/v1";
+            g_config.baseUrl = "https://api.anthropic.com";
         }
     }
 
-    // Env-var fallback for api_key (populated by .env, setx, or shell)
+    // Env-var fallback for api_key (populated by .env, setx, or shell).
+    // Anthropic-only: no OpenAI / OpenRouter fallbacks.
     if (!g_config.apiKey.empty()) {
         g_apiKeySource = "mcp_config.ini:[llm].api_key";
     } else {
-        std::string key = ReadEnv("OPENROUTER_API_KEY");
+        std::string key = ReadEnv("ANTHROPIC_API_KEY");
         if (!key.empty()) {
             g_config.apiKey = key;
-            g_apiKeySource = DetectEnvSourceLabel("OPENROUTER_API_KEY");
-        }
-    }
-    if (g_config.apiKey.empty()) {
-        std::string key = ReadEnv("LLM_API_KEY");
-        if (!key.empty()) {
-            g_config.apiKey = key;
-            g_apiKeySource = DetectEnvSourceLabel("LLM_API_KEY");
-        }
-    }
-    if (g_config.apiKey.empty()) {
-        std::string key = ReadEnv("OPENAI_API_KEY");
-        if (!key.empty()) {
-            g_config.apiKey = key;
-            g_apiKeySource = DetectEnvSourceLabel("OPENAI_API_KEY");
+            g_apiKeySource = DetectEnvSourceLabel("ANTHROPIC_API_KEY");
         }
     }
 
@@ -387,8 +374,14 @@ static std::string HttpPost(
         return "{\"error\":\"WinHttpOpenRequest failed\"}";
     }
 
+    // Anthropic Messages API: x-api-key + anthropic-version header
+    // (https://docs.anthropic.com/en/api/messages). We do NOT send an
+    // Authorization: Bearer header; that would be a bug-class mistake
+    // that previously leaked OpenAI/OpenRouter-shaped requests at this
+    // endpoint.
     std::wstring headers = L"Content-Type: application/json\r\n";
-    headers += L"Authorization: Bearer " + Utf8ToWide(apiKey) + L"\r\n";
+    headers += L"x-api-key: " + Utf8ToWide(apiKey) + L"\r\n";
+    headers += L"anthropic-version: 2023-06-01\r\n";
     WinHttpAddRequestHeaders(hRequest, headers.c_str(), -1, WINHTTP_ADDREQ_FLAG_ADD);
 
     BOOL sent = WinHttpSendRequest(
@@ -481,7 +474,53 @@ static std::string FormatApiError(const json& errorObj) {
     return formatted;
 }
 
-// ── Chat completion ─────────────────────────────────────────────
+// ── Chat completion (Anthropic Messages API) ────────────────────
+//
+// Schema reference: https://docs.anthropic.com/en/api/messages
+//
+// Request shape:
+//   {
+//     "model": "claude-sonnet-4-6",
+//     "max_tokens": 4096,
+//     "system": "<system prompt extracted from messages[0] if role=='system'>",
+//     "messages": [
+//       {"role": "user",      "content": [{"type":"text","text":"..."}]},
+//       {"role": "assistant", "content": [
+//           {"type":"text","text":"..."},
+//           {"type":"tool_use","id":"toolu_..","name":"...","input":{...}}
+//       ]},
+//       {"role": "user",      "content": [
+//           {"type":"tool_result","tool_use_id":"toolu_..","content":"..."}
+//       ]}
+//     ],
+//     "tools": [{"name":"...","description":"...","input_schema":{...}}]
+//   }
+//
+// Response shape:
+//   {
+//     "content": [
+//       {"type":"text","text":"..."},
+//       {"type":"tool_use","id":"toolu_..","name":"...","input":{...}}
+//     ],
+//     "stop_reason": "end_turn" | "tool_use" | "max_tokens" | "stop_sequence",
+//     ...
+//   }
+//
+// The Message struct still uses {role, content, toolCallId, toolCalls}
+// for backward compat with callers (chat_ui.cpp, chat_handlers.cpp).
+// The mapping rules:
+//   - role == "system"    → extracted into top-level "system" field, not pushed.
+//   - role == "tool"      → emitted as role:"user" with a tool_result block.
+//   - role == "assistant" → text content + assistant-stored tool_use blocks.
+//   - role == "user"      → text content.
+
+static json BuildAnthropicUserContent(const std::string& text) {
+    json arr = json::array();
+    if (!text.empty()) {
+        arr.push_back({{"type", "text"}, {"text", text}});
+    }
+    return arr;
+}
 
 LLMClient::Response LLMClient::Chat(
     const std::vector<Message>& messages,
@@ -491,7 +530,7 @@ LLMClient::Response LLMClient::Chat(
     Response resp;
 
     if (!IsConfigured()) {
-        resp.error = "LLM not configured. Put OPENROUTER_API_KEY in %LOCALAPPDATA%\\3dsmax-mcp\\.env or set it as an env var, then /reload.";
+        resp.error = "LLM not configured. Put ANTHROPIC_API_KEY in %LOCALAPPDATA%\\3dsmax-mcp\\.env or set it as an env var, then /reload.";
         return resp;
     }
 
@@ -501,28 +540,66 @@ LLMClient::Response LLMClient::Chat(
     body["temperature"] = g_config.temperature;
 
     json msgs = json::array();
-    for (auto& m : messages) {
-        json msg;
-        msg["role"] = m.role;
+    std::string systemPrompt;
+
+    for (const auto& m : messages) {
+        if (m.role == "system") {
+            // Anthropic uses a top-level "system" field, not a system-role
+            // message. Concatenate if the caller supplies multiple.
+            if (!systemPrompt.empty()) systemPrompt += "\n\n";
+            systemPrompt += m.content;
+            continue;
+        }
 
         if (m.role == "tool") {
-            msg["content"] = m.content;
-            msg["tool_call_id"] = m.toolCallId;
-        } else if (m.role == "assistant" && !m.toolCalls.is_null() && !m.toolCalls.empty()) {
-            msg["content"] = m.content.empty() ? nullptr : json(m.content);
-            msg["tool_calls"] = m.toolCalls;
-        } else {
-            msg["content"] = m.content;
+            // Tool result → user-role message with a tool_result content block.
+            json content = json::array();
+            json block;
+            block["type"] = "tool_result";
+            block["tool_use_id"] = m.toolCallId;
+            block["content"] = m.content;
+            content.push_back(block);
+            msgs.push_back({{"role", "user"}, {"content", content}});
+            continue;
         }
-        msgs.push_back(msg);
+
+        if (m.role == "assistant") {
+            json content = json::array();
+            if (!m.content.empty()) {
+                content.push_back({{"type", "text"}, {"text", m.content}});
+            }
+            // toolCalls is stored in Anthropic's tool_use shape already
+            // (see response-parsing branch below) — pass through verbatim.
+            if (!m.toolCalls.is_null() && m.toolCalls.is_array()) {
+                for (const auto& tc : m.toolCalls) {
+                    content.push_back(tc);
+                }
+            }
+            // Anthropic rejects assistant turns with empty content arrays;
+            // fall back to an empty-string text block in that edge case.
+            if (content.empty()) {
+                content.push_back({{"type", "text"}, {"text", ""}});
+            }
+            msgs.push_back({{"role", "assistant"}, {"content", content}});
+            continue;
+        }
+
+        // Default: user-role message with a text block.
+        msgs.push_back({{"role", "user"}, {"content", BuildAnthropicUserContent(m.content)}});
+    }
+
+    if (!systemPrompt.empty()) {
+        body["system"] = systemPrompt;
     }
     body["messages"] = msgs;
 
-    if (!tools.empty()) {
+    if (!tools.is_null() && !tools.empty()) {
         body["tools"] = tools;
     }
 
-    std::string url = g_config.baseUrl + "/chat/completions";
+    // Anthropic requires no trailing path component beyond /v1/messages;
+    // unlike OpenAI-compat, there is no /chat/completions.
+    std::string url = g_config.baseUrl + "/v1/messages";
     std::string reqBody = body.dump();
 
     std::string rawResp = HttpPost(url, reqBody, g_config.apiKey, timeoutMs);
@@ -530,35 +607,41 @@ LLMClient::Response LLMClient::Chat(
     try {
         json r = json::parse(rawResp);
 
+        // Anthropic returns errors as either {"type":"error","error":{...}}
+        // or a top-level {"error": {...}} on some failures; FormatApiError
+        // accepts both shapes.
         if (r.contains("error")) {
             resp.error = FormatApiError(r["error"]);
             return resp;
         }
-
-        if (!r.contains("choices") || r["choices"].empty()) {
-            resp.error = "No choices in response";
+        if (r.value("type", "") == "error") {
+            resp.error = FormatApiError(r);
             return resp;
         }
 
-        auto& choice = r["choices"][0];
-        auto& msg = choice["message"];
-
-        resp.finishReason = choice.value("finish_reason", "stop");
+        resp.finishReason = r.value("stop_reason", "end_turn");
         resp.ok = true;
 
-        if (msg.contains("content") && !msg["content"].is_null()) {
-            resp.text = msg["content"].get<std::string>();
-        }
-
-        if (msg.contains("tool_calls") && !msg["tool_calls"].is_null()) {
-            for (auto& tc : msg["tool_calls"]) {
-                ToolCall call;
-                call.id = tc.value("id", "");
-                call.name = tc["function"].value("name", "");
-                std::string args = tc["function"].value("arguments", "{}");
-                try { call.arguments = json::parse(args); }
-                catch (...) { call.arguments = json::object(); }
-                resp.toolCalls.push_back(call);
+        if (r.contains("content") && r["content"].is_array()) {
+            // Anthropic returns assistant text + tool_use blocks side-by-side
+            // in the content array. We re-pack the tool_use blocks into the
+            // existing ToolCall vector so callers do not need to change.
+            for (const auto& block : r["content"]) {
+                std::string blockType = block.value("type", "");
+                if (blockType == "text") {
+                    if (!resp.text.empty()) resp.text += "\n";
+                    resp.text += block.value("text", "");
+                } else if (blockType == "tool_use") {
+                    ToolCall call;
+                    call.id = block.value("id", "");
+                    call.name = block.value("name", "");
+                    if (block.contains("input")) {
+                        call.arguments = block["input"];
+                    } else {
+                        call.arguments = json::object();
+                    }
+                    resp.toolCalls.push_back(call);
+                }
             }
         }
 
@@ -624,7 +707,7 @@ static const ChatTool kChatTools[] = {
 static const size_t kChatToolCount = sizeof(kChatTools) / sizeof(kChatTools[0]);
 #endif
 
-// ── OpenAI-format tool definitions ──────────────────────────────
+// ── Anthropic-format tool definitions ───────────────────────────
 
 static bool ToolAllowedByProfile(const std::string& profile, const std::string& name) {
     if (profile == "full") return true;
@@ -703,13 +786,12 @@ json LLMClient::GetToolDefinitions() {
         }
         json schema = json::parse(t.schemaJson, nullptr, false);
         if (schema.is_discarded()) schema = json{{"type","object"},{"properties",json::object()}};
+        // Anthropic Messages API tool shape:
+        //   { "name": str, "description": str, "input_schema": JSONSchema }
         tools.push_back({
-            {"type", "function"},
-            {"function", {
-                {"name", t.name},
-                {"description", t.description},
-                {"parameters", schema}
-            }}
+            {"name", t.name},
+            {"description", t.description},
+            {"input_schema", schema},
         });
     }
     return tools;

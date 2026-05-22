@@ -2,6 +2,7 @@ import json
 import re
 
 from ..server import mcp, client
+from ..helpers.safe_mode import check_script, SafeModeViolation
 
 
 _MAXSCRIPT_ERROR_SENTINEL = "__MCP_MS_ERR__:"
@@ -76,6 +77,15 @@ def execute_maxscript(code: str = "", command: str = "") -> str:
     script = code or command
     if not script:
         return "Error: provide MAXScript code in the 'code' parameter"
+    try:
+        check_script(script)
+    except SafeModeViolation as exc:
+        return json.dumps({
+            "status": "error",
+            "error_type": "SafeModeViolation",
+            "error": str(exc),
+            "blocked_fragment": exc.fragment,
+        })
     response = client.send_command(script, cmd_type="maxscript")
     result = response.get("result", "")
 

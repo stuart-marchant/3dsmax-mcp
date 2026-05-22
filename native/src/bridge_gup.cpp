@@ -4,6 +4,22 @@
 #include "mcp_bridge/handler_helpers.h"
 #include <maxapi.h>
 #include <notify.h>
+#include <windows.h>
+#include <cctype>
+#include <string>
+
+// Chat is disabled by default. The artist (or their MCP definition) must set
+// MCP_ENABLE_CHAT=1 in the process environment to load the in-Max chat UI and
+// the LLM client. Without it we skip both — the macroscript that opens the
+// chat window is never registered, and LLMClient::Init() is not called.
+static bool ChatEnabledByEnv() {
+    char buf[64] = {};
+    DWORD n = GetEnvironmentVariableA("MCP_ENABLE_CHAT", buf, sizeof(buf));
+    if (n == 0 || n >= sizeof(buf)) return false;
+    std::string value(buf, n);
+    for (auto& c : value) c = (char)std::tolower((unsigned char)c);
+    return value == "1" || value == "true" || value == "yes" || value == "on";
+}
 
 // ── ClassDesc2 ──────────────────────────────────────────────────
 class MCPBridgeClassDesc : public ClassDesc2 {
@@ -44,7 +60,7 @@ void ShowChat() {
         MCPChatUI::AppendMessage("ai", "Chat ready. Model: " + LLMClient::GetConfig().model);
     } else {
         MCPChatUI::AppendMessage("system",
-            "No API key. Edit %LOCALAPPDATA%\\3dsmax-mcp\\.env (add OPENROUTER_API_KEY), "
+            "No API key. Edit %LOCALAPPDATA%\\3dsmax-mcp\\.env (add ANTHROPIC_API_KEY), "
             "then /reload.");
     }
 }
@@ -52,6 +68,11 @@ void ShowChat() {
 static void OnSystemStartupDone(void* param, NotifyInfo* info) {
     if (!g_gupInstance) return;
     UnRegisterNotification(OnSystemStartupDone, nullptr, NOTIFY_SYSTEM_STARTUP);
+
+    // Chat macroscript is only registered when the operator opts in via env var.
+    // This keeps the "MCP Chat" toolbar button from appearing on artist machines
+    // that have not been signed off for third-party LLM egress.
+    if (!ChatEnabledByEnv()) return;
 
     // Register a global MAXScript struct with functions that call our C++ directly
     // via the hidden executor window's WM_USER message
@@ -72,15 +93,19 @@ DWORD MCPBridgeGUP::Start() {
     g_gupInstance = this;
     executor_.Initialize();
 
-    // Chat UI init deferred out of DllMain — calling LoadLibraryW for
-    // msftedit.dll under the loader lock deadlocks Max startup.
-    MCPChatUI::Init(hInstance);
+    const bool chatEnabled = ChatEnabledByEnv();
 
     pipe_server_ = std::make_unique<PipeServer>(this);
     pipe_server_->Start();
 
-    // Init LLM client — reads %LOCALAPPDATA%\3dsmax-mcp\mcp_config.ini [llm]
-    LLMClient::Init();
+    if (chatEnabled) {
+        // Chat UI init deferred out of DllMain — calling LoadLibraryW for
+        // msftedit.dll under the loader lock deadlocks Max startup.
+        MCPChatUI::Init(hInstance);
+        // Init LLM client — reads %LOCALAPPDATA%\3dsmax-mcp\mcp_config.ini [llm]
+        // and ANTHROPIC_API_KEY from .env / env.
+        LLMClient::Init();
+    }
 
     Interface* ip = GetCOREInterface();
     if (ip) {
@@ -89,7 +114,10 @@ DWORD MCPBridgeGUP::Start() {
             log->LogEntry(SYSLOG_INFO, NO_DIALOG,
                 _T("MCP Bridge"),
                 _T("MCP Bridge: Native pipe server started on \\\\.\\pipe\\3dsmax-mcp"));
-            if (LLMClient::IsConfigured()) {
+            if (!chatEnabled) {
+                log->LogEntry(SYSLOG_INFO, NO_DIALOG, _T("MCP Bridge"),
+                    _T("MCP Bridge: in-Max chat disabled (set MCP_ENABLE_CHAT=1 to enable)"));
+            } else if (LLMClient::IsConfigured()) {
                 std::wstring model = HandlerHelpers::Utf8ToWide(LLMClient::GetConfig().model);
                 std::wstring msg = L"MCP Bridge: Standalone chat ready (" + model + L")";
                 log->LogEntry(SYSLOG_INFO, NO_DIALOG, _T("MCP Bridge"), msg.c_str());
@@ -97,7 +125,8 @@ DWORD MCPBridgeGUP::Start() {
         }
     }
 
-    // Register macroscripts after Max is fully loaded
+    // Register macroscripts after Max is fully loaded. The chat macro
+    // registration itself is gated on MCP_ENABLE_CHAT (see OnSystemStartupDone).
     RegisterNotification(OnSystemStartupDone, nullptr, NOTIFY_SYSTEM_STARTUP);
 
     return GUPRESULT_KEEP;

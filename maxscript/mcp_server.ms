@@ -248,7 +248,16 @@ struct MCPServerStruct
 					(
 						-- Block dangerous commands
 						local lowerCmd = toLower command
-						local blocked = #("doscommand", "shelllaunch", "deletefile", "python.execute", "createfile", "hiddendoscommand")
+						-- Keep in lockstep with src/helpers/safe_mode.py and
+						-- native/src/command_dispatcher.cpp. See README → "Safe mode".
+						local blocked = #( \
+							"doscommand", "hiddendoscommand", "shelllaunch", \
+							"deletefile", "createfile", "python.execute", \
+							"dotnetclass", "dotnetobject", "dotnetmethod", "loadassembly", \
+							"filein ", "filein\t", "filein\"", "filein(", \
+							"registerolei", "decodebase64", "encodebase64", \
+							"execute (", "execute(" \
+						)
 						local isBlocked = false
 						for b in blocked while not isBlocked do
 							if findString lowerCmd b != undefined do isBlocked = true

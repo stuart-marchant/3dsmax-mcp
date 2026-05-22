@@ -78,7 +78,6 @@ CORE_TOOL_MODULES = (
 )
 
 SPECIALTY_TOOL_MODULES = (
-    "chat",
     "data_channel",
     "effects",
     "floor_plan",
@@ -89,6 +88,19 @@ SPECIALTY_TOOL_MODULES = (
     "tyflow",
     "wire_params",
 )
+
+# Modules that are off by default and require an explicit opt-in env var.
+# Each entry maps module name → env var that enables it. The in-Max chat
+# window proxies tool calls to a third-party LLM (Anthropic) and ships
+# scene contents off-host, so it must be enabled deliberately.
+OPT_IN_TOOL_MODULES = {
+    "chat": "MCP_ENABLE_CHAT",
+}
+
+
+def _env_truthy(name: str) -> bool:
+    value = (os.environ.get(name) or "").strip().lower()
+    return value in {"1", "true", "yes", "on"}
 
 
 def _tool_profile() -> str:
@@ -101,6 +113,15 @@ def _register_tool_modules() -> None:
     modules = list(CORE_TOOL_MODULES)
     if _tool_profile() == "full":
         modules.extend(SPECIALTY_TOOL_MODULES)
+    for name, env_var in OPT_IN_TOOL_MODULES.items():
+        if _env_truthy(env_var):
+            modules.append(name)
+            logging.info("3dsmax-mcp: opt-in module enabled: %s (via %s)", name, env_var)
+        else:
+            logging.info(
+                "3dsmax-mcp: opt-in module disabled: %s (set %s=true to enable)",
+                name, env_var,
+            )
     for name in modules:
         import_module(f".tools.{name}", package=__package__)
 

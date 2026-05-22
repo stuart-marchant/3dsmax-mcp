@@ -1,5 +1,6 @@
 import json
 from ..server import mcp, client
+from ..helpers.paths import validate_path, PathPolicyError
 
 @mcp.tool()
 def render_scene(
@@ -8,6 +9,11 @@ def render_scene(
     output_path: str = "",
 ) -> str:
     """Render the current viewport in 3ds Max."""
+    try:
+        output_path = validate_path(output_path, purpose="write render output")
+    except PathPolicyError as exc:
+        return json.dumps({"error": str(exc)})
+
     if client.native_available:
         payload = json.dumps({"width": width, "height": height, "output_path": output_path})
         response = client.send_command(payload, cmd_type="native:render_scene", timeout=300)
