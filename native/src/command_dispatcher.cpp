@@ -7,6 +7,22 @@
 #include <chrono>
 #include <unordered_set>
 #include <shlobj.h>
+#include <windows.h>
+#include <cctype>
+
+// Mirror of bridge_gup.cpp's ChatEnabledByEnv() — read the env var fresh
+// per call so an operator can toggle MCP_ENABLE_CHAT without restarting
+// Max. Kept duplicated rather than promoted to a shared header because
+// it is eight lines and the alternative is a refactor we do not need
+// before the trial.
+static bool DispatchChatEnabledByEnv() {
+    char buf[64] = {};
+    DWORD n = GetEnvironmentVariableA("MCP_ENABLE_CHAT", buf, sizeof(buf));
+    if (n == 0 || n >= sizeof(buf)) return false;
+    std::string value(buf, n);
+    for (auto& c : value) c = (char)std::tolower((unsigned char)c);
+    return value == "1" || value == "true" || value == "yes" || value == "on";
+}
 
 #include <max.h>
 #include <maxapi.h>
@@ -158,8 +174,14 @@ static bool ContainsBlockedCommand(const std::string& cmd) {
     std::string lower = cmd;
     for (auto& c : lower) c = (char)tolower((unsigned char)c);
 
-    // Keep in lockstep with src/helpers/safe_mode.py and
-    // maxscript/mcp_server.ms. See README → "Safe mode".
+    // Keep in lockstep with src/helpers/safe_mode.py BLOCKED_FRAGMENTS
+    // and maxscript/mcp_server.ms. See README → "Safe mode".
+    //
+    // Note: ``execute "literal"`` shape is filtered by a regex in the
+    // Python pre-pipe layer rather than a substring here — that shape
+    // false-positives on legitimate ``execute (expr)`` if we use a
+    // substring match. The bridge still gets the substring filter for
+    // every directly-named risky API.
     static const char* blocked[] = {
         "doscommand",
         "hiddendoscommand",
@@ -178,8 +200,8 @@ static bool ContainsBlockedCommand(const std::string& cmd) {
         "registerolei",
         "decodebase64",
         "encodebase64",
-        "execute (",
-        "execute(",
+        "executescript",
+        "executestring",
     };
     for (const char* b : blocked) {
         if (lower.find(b) != std::string::npos) return true;
@@ -480,8 +502,17 @@ std::string CommandDispatcher::Dispatch(
             result = NativeHandlers::InvokeInterface(command, gup);
         } else if (cmd_type == "native:run_macroscript") {
             result = NativeHandlers::RunMacroscript(command, gup);
-        // Chat UI (v0.7.0)
+        // Chat UI (v0.7.0) — unreachable unless MCP_ENABLE_CHAT is set.
+        // The Python tool layer already refuses to register the chat
+        // tools, but a non-Python pipe writer could otherwise still
+        // reach this handler; mirror the gate that bridge_gup.cpp
+        // applies during Start().
         } else if (cmd_type == "native:chat_ui") {
+            if (!DispatchChatEnabledByEnv()) {
+                throw std::runtime_error(
+                    "Chat is disabled. Set MCP_ENABLE_CHAT=1 in the "
+                    "environment Max is launched with, then restart Max.");
+            }
             result = NativeHandlers::ChatUI(command, gup);
         } else {
             throw std::runtime_error("Unknown command type: " + cmd_type);

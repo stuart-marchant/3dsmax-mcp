@@ -250,13 +250,16 @@ struct MCPServerStruct
 						local lowerCmd = toLower command
 						-- Keep in lockstep with src/helpers/safe_mode.py and
 						-- native/src/command_dispatcher.cpp. See README → "Safe mode".
+						-- The execute"literal" / execute@"literal" shape is filtered
+						-- by a regex in the Python layer; here we just list direct
+						-- risky API names.
 						local blocked = #( \
 							"doscommand", "hiddendoscommand", "shelllaunch", \
 							"deletefile", "createfile", "python.execute", \
 							"dotnetclass", "dotnetobject", "dotnetmethod", "loadassembly", \
 							"filein ", "filein\t", "filein\"", "filein(", \
 							"registerolei", "decodebase64", "encodebase64", \
-							"execute (", "execute(" \
+							"executescript", "executestring" \
 						)
 						local isBlocked = false
 						for b in blocked while not isBlocked do

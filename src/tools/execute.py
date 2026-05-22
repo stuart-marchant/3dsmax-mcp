@@ -84,7 +84,7 @@ def execute_maxscript(code: str = "", command: str = "") -> str:
             "status": "error",
             "error_type": "SafeModeViolation",
             "error": str(exc),
-            "blocked_fragment": exc.fragment,
+            "reason": exc.reason,
         })
     response = client.send_command(script, cmd_type="maxscript")
     result = response.get("result", "")

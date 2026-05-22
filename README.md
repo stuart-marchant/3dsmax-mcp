@@ -209,13 +209,38 @@ no LLM HTTP traffic.
 because the upstream binaries embed the OpenAI-compat / OpenRouter
 chat client. Rebuild from source before deploying.
 
-**Max 2026** — Visual Studio 2022 (v143), C++17, CMake 3.20+
+**Max 2024 / 2025 / 2026** — Visual Studio 2022 (v143), C++17, CMake 3.20+
 **Max 2027+** — Visual Studio 2022 (v143), C++20, CMake 3.20+
+
+The fastest path is `build_all.bat`, which builds every version whose
+SDK is installed and stages each `.gup` into `native/bin/` with the
+suffix that `install.py` expects:
+
+```powershell
+cd native
+build_all.bat              # detects installed SDKs, builds each
+build_all.bat 2026 2027    # build only the versions you name
+```
+
+Output layout:
+
+```
+native/bin/mcp_bridge.gup        ← Max 2026 (the "default" target)
+native/bin/mcp_bridge_2024.gup
+native/bin/mcp_bridge_2025.gup
+native/bin/mcp_bridge_2027.gup
+```
+
+`install.py` reads the artist's installed Max version and copies the
+matching `.gup` to `C:\Program Files\Autodesk\3ds Max <version>\plugins\`.
+If no matching binary is staged, install fails loudly with a build
+command — the 2026 binary is **not** ABI-compatible with other
+versions and we refuse to silently substitute it.
+
+For a single-version build:
 
 ```powershell
 cd native
 cmake -B build -G "Visual Studio 17 2022" -A x64 -DMAX_VERSION=2026
 cmake --build build --config Release
 ```
-
-Then copy `native/build/Release/mcp_bridge.gup` to `C:\Program Files\Autodesk\3ds Max <version>\plugins\`.

@@ -17,19 +17,38 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
+# 2026 is the "default" .gup — it matches the source-of-truth build
+# config in native/CMakeLists.txt. Other versions get an explicit
+# suffix so a single install.py run can pick the right binary for
+# whichever Max the artist has installed.
 GUP_SRC_DEFAULT = ROOT / "native" / "bin" / "mcp_bridge.gup"
 GUP_SRCS = {
+    2024: ROOT / "native" / "bin" / "mcp_bridge_2024.gup",
+    2025: ROOT / "native" / "bin" / "mcp_bridge_2025.gup",
     2027: ROOT / "native" / "bin" / "mcp_bridge_2027.gup",
 }
 
 
-def gup_src_for(max_dir: Path) -> Path:
+def gup_src_for(max_dir: Path) -> Path | None:
+    """Return the .gup path that matches ``max_dir``'s Max version.
+
+    Returns ``None`` if no suitable binary is staged. We refuse to fall
+    back to the default 2026 binary for a 2027 or 2024 install — the
+    SDK/ABI is different per major version and an artist running the
+    wrong .gup gets a silent failure (Max loads nothing) rather than a
+    clear "rebuild needed" message.
+    """
     try:
         year = int(max_dir.name.split()[-1])
-        src = GUP_SRCS.get(year, GUP_SRC_DEFAULT)
-        return src if src.exists() else GUP_SRC_DEFAULT
     except (ValueError, IndexError):
-        return GUP_SRC_DEFAULT
+        # Unrecognised dir name; fall back to default and let the caller
+        # surface a clear error if it does not exist.
+        return GUP_SRC_DEFAULT if GUP_SRC_DEFAULT.exists() else None
+
+    if year == 2026:
+        return GUP_SRC_DEFAULT if GUP_SRC_DEFAULT.exists() else None
+    src = GUP_SRCS.get(year)
+    return src if (src and src.exists()) else None
 MS_SERVER = ROOT / "maxscript" / "mcp_server.ms"
 MS_AUTOSTART = ROOT / "maxscript" / "startup" / "mcp_autostart.ms"
 CONFIG_SRC = ROOT / "mcp_config.ini"
@@ -136,10 +155,20 @@ def deploy_native_bridge(max_dir: Path) -> bool:
     dst = plugins_dir / "mcp_bridge.gup"
     gup_src = gup_src_for(max_dir)
     print(f"\n[2/5] Native bridge -> {dst}")
-    print(f"  Using: {gup_src.name}")
-    if not gup_src.exists():
-        print(f"  SKIP: pre-built binary not found at {gup_src}")
+    if gup_src is None:
+        try:
+            year = max_dir.name.split()[-1]
+        except IndexError:
+            year = "?"
+        print(
+            f"  ERROR: no prebuilt .gup matches Max {year}. The 2026 binary is "
+            f"NOT ABI-compatible with other versions. Build the matching binary "
+            f"first:\n"
+            f"      cd native && build_all.bat {year}\n"
+            f"  then re-run this installer."
+        )
         return False
+    print(f"  Using: {gup_src.name}")
     if copy_elevated(gup_src, dst):
         print("  OK")
         return True

@@ -13,17 +13,20 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent
 
 MAX_DIRS = [
+    Path(r"C:\Program Files\Autodesk\3ds Max 2027"),
     Path(r"C:\Program Files\Autodesk\3ds Max 2026"),
     Path(r"C:\Program Files\Autodesk\3ds Max 2025"),
     Path(r"C:\Program Files\Autodesk\3ds Max 2024"),
 ]
 
 
+def find_max_installations() -> list[Path]:
+    return [d for d in MAX_DIRS if (d / "3dsmax.exe").exists()]
+
+
 def find_max() -> Path | None:
-    for d in MAX_DIRS:
-        if (d / "3dsmax.exe").exists():
-            return d
-    return None
+    found = find_max_installations()
+    return found[0] if found else None
 
 
 def delete_elevated(path: Path) -> bool:
@@ -59,32 +62,37 @@ def main():
     print("  3dsmax-mcp uninstaller")
     print("=" * 60)
 
-    # 1. Remove native bridge + MAXScript from Max
-    max_dir = find_max()
-    if max_dir:
-        print(f"\nFound 3ds Max at: {max_dir}")
+    # 1. Remove native bridge + MAXScript from every installed Max.
+    # Studios commonly have multiple versions side-by-side; cleaning one
+    # while leaving another behind is the recipe for ghost-installs.
+    max_dirs = find_max_installations()
+    if max_dirs:
+        print(f"\nFound 3ds Max installations: {len(max_dirs)}")
+        for max_dir in max_dirs:
+            print(f"  - {max_dir}")
 
-        gup = max_dir / "plugins" / "mcp_bridge.gup"
-        ms_server = max_dir / "scripts" / "mcp" / "mcp_server.ms"
-        ms_auto = max_dir / "scripts" / "startup" / "mcp_autostart.ms"
-        ms_dir = max_dir / "scripts" / "mcp"
+        print("\n[1/4] Removing native bridge + MAXScript from each Max")
+        for max_dir in max_dirs:
+            print(f"\n  {max_dir.name}:")
+            gup = max_dir / "plugins" / "mcp_bridge.gup"
+            ms_server = max_dir / "scripts" / "mcp" / "mcp_server.ms"
+            ms_auto = max_dir / "scripts" / "startup" / "mcp_autostart.ms"
+            ms_dir = max_dir / "scripts" / "mcp"
 
-        print("\n[1/4] Removing native bridge + MAXScript")
-        for f in [gup, ms_server, ms_auto]:
-            if f.exists():
-                if delete_elevated(f):
-                    print(f"  Deleted: {f}")
+            for f in [gup, ms_server, ms_auto]:
+                if f.exists():
+                    if delete_elevated(f):
+                        print(f"    Deleted: {f}")
+                    else:
+                        print(f"    FAILED: {f}")
                 else:
-                    print(f"  FAILED: {f}")
-            else:
-                print(f"  Already gone: {f.name}")
+                    print(f"    Already gone: {f.name}")
 
-        # Remove empty mcp/ dir
-        if ms_dir.exists() and not any(ms_dir.iterdir()):
-            try:
-                ms_dir.rmdir()
-            except Exception:
-                pass
+            if ms_dir.exists() and not any(ms_dir.iterdir()):
+                try:
+                    ms_dir.rmdir()
+                except Exception:
+                    pass
     else:
         print("\n[1/4] SKIP: 3ds Max not found")
 
