@@ -167,6 +167,37 @@ Default full profile: 116 tools across scene management, objects, materials, mod
 | Data Channel | `add_data_channel`, `inspect_data_channel`, `set_data_channel_operator` | MAXScript |
 | Scripting | `execute_maxscript` | Pipe |
 
+## Audit log
+
+Every MCP tool call emits one JSON line to a per-day file so a studio
+SIEM can answer "what tool ran on this host, when, and how big was the
+result?" without retaining any payload. The schema is:
+
+```json
+{"ts":"2026-05-22T03:14:15.926Z","tool":"render_scene","ok":true,
+ "elapsed_ms":42.7,"arg_bytes":128,"result_bytes":15872,
+ "error_type":null,"transport":"native"}
+```
+
+Default location:
+
+- Windows — `%LOCALAPPDATA%\3dsmax-mcp\logs\tool_calls-YYYY-MM-DD.jsonl`
+- macOS / Linux — `$XDG_STATE_HOME/3dsmax-mcp/logs/` (or
+  `~/.local/state/3dsmax-mcp/logs/`)
+
+Knobs:
+
+| Env var | Effect |
+|---|---|
+| `MCP_AUDIT_DIR` | Override the log directory (point at a SIEM-watched path). |
+| `MCP_DISABLE_AUDIT=true` | Opt out (for power users only — IT should not). |
+
+The audit log records **sizes only**. Argument values, result bodies,
+API keys, and chat prompts never reach the log file. The LLM-call
+audit (see `GHOTI-248`) covers the chat egress story separately. Audit
+write failures degrade silently — a bad log directory cannot break
+tool calls.
+
 ## Optional: in-Max chat (off by default)
 
 The bridge can host an LLM chat window inside 3ds Max with direct

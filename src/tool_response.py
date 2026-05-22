@@ -10,6 +10,8 @@ from inspect import Parameter, Signature, signature
 from pathlib import Path
 from typing import Any, Callable, get_type_hints
 
+from .helpers import audit
+
 
 _ERROR_PREFIXES = (
     "error:",
@@ -183,16 +185,36 @@ def make_structured_tool(
     def wrapped(*args: Any, **kwargs: Any) -> str:
         if before_call:
             before_call()
+        # Argument size is captured *before* invocation so the audit
+        # record reflects what the LLM tried to do even when the tool
+        # raises. We only record the size; argument values themselves
+        # never leave the process.
+        try:
+            arg_bytes = len(json.dumps(
+                {"args": list(args), "kwargs": kwargs},
+                ensure_ascii=False,
+                default=repr,
+            ).encode("utf-8"))
+        except Exception:
+            arg_bytes = 0
         started_at = time.perf_counter()
         try:
             raw = fn(*args, **kwargs)
             elapsed_ms = (time.perf_counter() - started_at) * 1000.0
             transport = transport_provider() if transport_provider else None
-            return envelope_result(raw, elapsed_ms=elapsed_ms, transport=transport)
+            envelope = envelope_result(raw, elapsed_ms=elapsed_ms, transport=transport)
         except Exception as exc:
             elapsed_ms = (time.perf_counter() - started_at) * 1000.0
             transport = transport_provider() if transport_provider else None
-            return envelope_exception(exc, elapsed_ms=elapsed_ms, transport=transport)
+            envelope = envelope_exception(exc, elapsed_ms=elapsed_ms, transport=transport)
+
+        audit.emit(
+            tool=fn.__name__,
+            arg_bytes=arg_bytes,
+            envelope_json=envelope,
+            elapsed_ms=elapsed_ms,
+        )
+        return envelope
 
     wrapped.__signature__ = fn_signature  # type: ignore[attr-defined]
     wrapped.__annotations__ = resolved_annotations
